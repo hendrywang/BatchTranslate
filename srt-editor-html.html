@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT File Editor with Translation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.21.2/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const App = () => {
+            const [srtContent, setSrtContent] = React.useState('');
+            const [targetLanguage, setTargetLanguage] = React.useState('');
+            const [translatedContent, setTranslatedContent] = React.useState('');
+            const [error, setError] = React.useState('');
+            const [isLoading, setIsLoading] = React.useState(false);
+            const [fileName, setFileName] = React.useState('');
+
+            const languages = [
+                { code: 'en', name: 'English' },
+                { code: 'vi', name: 'Vietnamese' },
+                { code: 'es', name: 'Spanish' },
+                { code: 'fr', name: 'French' },
+                { code: 'de', name: 'German' },
+                { code: 'it', name: 'Italian' },
+                { code: 'ja', name: 'Japanese' },
+                { code: 'ko', name: 'Korean' },
+                { code: 'zh', name: 'Chinese' },
+            ];
+
+            const loadFile = async () => {
+                try {
+                    const [fileHandle] = await window.showOpenFilePicker({
+                        types: [
+                            {
+                                description: 'SRT files',
+                                accept: { 'text/srt': ['.srt'] },
+                            },
+                        ],
+                    });
+                    const file = await fileHandle.getFile();
+                    setFileName(file.name);
+                    const content = await file.text();
+                    setSrtContent(content);
+                    setError('');
+                } catch (err) {
+                    console.error('Error loading file:', err);
+                    setError('Failed to load file. Please try again.');
+                }
+            };
+
+            const saveFile = async () => {
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: fileName || 'subtitles.srt',
+                        types: [
+                            {
+                                description: 'SRT files',
+                                accept: { 'text/srt': ['.srt'] },
+                            },
+                        ],
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(translatedContent || srtContent);
+                    await writable.close();
+                    setError('');
+                } catch (err) {
+                    console.error('Error saving file:', err);
+                    setError('Failed to save file. Please try again.');
+                }
+            };
+
+            const translateSRT = async () => {
+                setIsLoading(true);
+                setError('');
+                try {
+                    const response = await fetch('http://127.0.0.1:5000/translate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model: "gemma2:27b-instruct-q8_0",
+                            prompt: `Translate the following SRT content to ${targetLanguage}. Maintain the original SRT format, including timestamps and subtitle numbers:\n\n${srtContent}`,
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    if (data.error) {
+                        throw new Error(`API error: ${data.error}`);
+                    }
+                    setTranslatedContent(data.response);
+                } catch (error) {
+                    console.error('Translation error:', error);
+                    setError(`Translation failed: ${error.message}`);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            return (
+                <div className="container mx-auto p-4">
+                    <h1 className="text-2xl font-bold mb-4">SRT File Editor with Translation</h1>
+                    <div className="mb-4">
+                        <button onClick={loadFile} className="bg-blue-500 text-white px-4 py-2 rounded mr-2">
+                            Load SRT File
+                        </button>
+                        <button onClick={saveFile} className="bg-green-500 text-white px-4 py-2 rounded mr-2" disabled={!srtContent}>
+                            Save SRT File
+                        </button>
+                        <select 
+                            value={targetLanguage} 
+                            onChange={(e) => setTargetLanguage(e.target.value)}
+                            className="p-2 border rounded mr-2"
+                        >
+                            <option value="">Select target language</option>
+                            {languages.map(lang => (
+                                <option key={lang.code} value={lang.name}>{lang.name}</option>
+                            ))}
+                        </select>
+                        <button 
+                            onClick={translateSRT}
+                            className="bg-purple-500 text-white px-4 py-2 rounded"
+                            disabled={!srtContent || !targetLanguage || isLoading}
+                        >
+                            {isLoading ? 'Translating...' : 'Translate'}
+                        </button>
+                    </div>
+                    {fileName && <p className="mb-2">Current file: {fileName}</p>}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <h2 className="text-lg font-semibold mb-2">Original Content</h2>
+                            <textarea 
+                                value={srtContent}
+                                onChange={(e) => setSrtContent(e.target.value)}
+                                className="w-full h-64 p-2 border rounded"
+                                placeholder="SRT content will appear here"
+                            />
+                        </div>
+                        <div>
+                            <h2 className="text-lg font-semibold mb-2">Translated Content</h2>
+                            <textarea 
+                                value={translatedContent}
+                                onChange={(e) => setTranslatedContent(e.target.value)}
+                                className="w-full h-64 p-2 border rounded"
+                                placeholder="Translated content will appear here"
+                            />
+                        </div>
+                    </div>
+                    {error && <div className="mt-4 text-red-500">{error}</div>}
+                </div>
+            );
+        };
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
