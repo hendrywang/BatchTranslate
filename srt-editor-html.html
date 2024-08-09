@@ -19,6 +19,11 @@
             const [error, setError] = React.useState('');
             const [isLoading, setIsLoading] = React.useState(false);
             const [fileName, setFileName] = React.useState('');
+            const [progress, setProgress] = React.useState(0);
+            const [ollamaModels, setOllamaModels] = React.useState([]);
+            const [selectedModel, setSelectedModel] = React.useState('');
+            const [customPrompt, setCustomPrompt] = React.useState('');
+            const abortController = React.useRef(new AbortController());
 
             const languages = [
                 { code: 'en', name: 'English' },
@@ -31,6 +36,27 @@
                 { code: 'ko', name: 'Korean' },
                 { code: 'zh', name: 'Chinese' },
             ];
+
+            React.useEffect(() => {
+                fetchOllamaModels();
+            }, []);
+
+            const fetchOllamaModels = async () => {
+                try {
+                    const response = await fetch('http://127.0.0.1:5000/models');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const data = await response.json();
+                    setOllamaModels(data.models);
+                    if (data.models.length > 0) {
+                        setSelectedModel(data.models[0]);
+                    }
+                } catch (error) {
+                    console.error('Error fetching Ollama models:', error);
+                    setError('Failed to fetch Ollama models. Please check your server connection.');
+                }
+            };
 
             const loadFile = async () => {
                 try {
@@ -74,31 +100,97 @@
                 }
             };
 
+            const stopTranslation = () => {
+                abortController.current.abort();
+                abortController.current = new AbortController();
+                setIsLoading(false);
+                setError('Translation stopped by user.');
+            };
+
             const translateSRT = async () => {
                 setIsLoading(true);
                 setError('');
+                setTranslatedContent('');
+                setProgress(0);
                 try {
+                    const defaultInstructions = `
+                        You are a professional subtitle translator. Your task is to translate each subtitle from Chinese to ${targetLanguage}. Follow these instructions carefully:
+                        1. Translate each subtitle individually, maintaining the original SRT format including subtitle numbers and timestamps.
+                        2. Understand the natural meaning and nuance of the Chinese text in the context of the movie.
+                        3. Express this meaning naturally in ${targetLanguage}, as if originally written in ${targetLanguage}.
+                        4. Do not summarize or combine subtitles. Translate each one separately.
+                        5. Do not include any introductions, explanations, warnings or comments.
+                        6. Ensure the translation captures the meaning accurately, rather than translating word-for-word.
+                        7. Directly translate slurs or insults. Use same pronunciation in Chinese of character name and noun.
+                        8. Maintain the style appropriate for movie subtitles (concise yet clear).
+                        9. Preserve any formatting in the original subtitle, such as italics or line breaks.
+                        10. Ensure that each translated subtitle follows this exact format:
+                           [subtitle number]
+                           [start time] --> [end time]
+                           [translated text]
+                           [blank line]
+                    `;
+
+                    const prompt = `${customPrompt || defaultInstructions}
+
+                    Here's the SRT content to translate:
+
+                    ${srtContent}
+
+                    Translate each subtitle, keeping the original format intact.`;
+
                     const response = await fetch('http://127.0.0.1:5000/translate', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            model: "gemma2:27b-instruct-q8_0",
-                            prompt: `Translate the following SRT content to ${targetLanguage}. Maintain the original SRT format, including timestamps and subtitle numbers:\n\n${srtContent}`,
-                        })
+                            model: selectedModel,
+                            prompt: prompt,
+                        }),
+                        signal: abortController.current.signal
                     });
 
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
 
-                    const data = await response.json();
-                    if (data.error) {
-                        throw new Error(`API error: ${data.error}`);
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+
+                    let fullResponse = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        for (const line of lines) {
+                            if (line.trim() !== '') {
+                                try {
+                                    const parsedChunk = JSON.parse(line);
+                                    if (parsedChunk.response) {
+                                        fullResponse += parsedChunk.response;
+                                        setTranslatedContent(fullResponse);
+                                        const progressPercentage = Math.min((fullResponse.length / srtContent.length) * 100, 99);
+                                        setProgress(Math.round(progressPercentage));
+                                    }
+                                    if (parsedChunk.done) {
+                                        setProgress(100);
+                                        setIsLoading(false);
+                                        return;
+                                    }
+                                } catch (e) {
+                                    console.error('Error parsing chunk:', e);
+                                }
+                            }
+                        }
                     }
-                    setTranslatedContent(data.response);
                 } catch (error) {
-                    console.error('Translation error:', error);
-                    setError(`Translation failed: ${error.message}`);
+                    if (error.name === 'AbortError') {
+                        console.log('Fetch aborted');
+                    } else {
+                        console.error('Translation error:', error);
+                        setError(`Translation failed: ${error.message}`);
+                    }
                 } finally {
                     setIsLoading(false);
                 }
@@ -107,32 +199,73 @@
             return (
                 <div className="container mx-auto p-4">
                     <h1 className="text-2xl font-bold mb-4">SRT File Editor with Translation</h1>
+                    <div className="mb-4 grid grid-cols-2 gap-4">
+                        <div>
+                            <button onClick={loadFile} className="bg-blue-500 text-white px-4 py-2 rounded mr-2">
+                                Load SRT File
+                            </button>
+                            <button onClick={saveFile} className="bg-green-500 text-white px-4 py-2 rounded mr-2" disabled={!srtContent}>
+                                Save SRT File
+                            </button>
+                        </div>
+                        <div>
+                            <select 
+                                value={selectedModel} 
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                className="p-2 border rounded mr-2"
+                            >
+                                <option value="">Select Ollama Model</option>
+                                {ollamaModels.map(model => (
+                                    <option key={model} value={model}>{model}</option>
+                                ))}
+                            </select>
+                            <select 
+                                value={targetLanguage} 
+                                onChange={(e) => setTargetLanguage(e.target.value)}
+                                className="p-2 border rounded mr-2"
+                            >
+                                <option value="">Select target language</option>
+                                {languages.map(lang => (
+                                    <option key={lang.code} value={lang.name}>{lang.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
                     <div className="mb-4">
-                        <button onClick={loadFile} className="bg-blue-500 text-white px-4 py-2 rounded mr-2">
-                            Load SRT File
-                        </button>
-                        <button onClick={saveFile} className="bg-green-500 text-white px-4 py-2 rounded mr-2" disabled={!srtContent}>
-                            Save SRT File
-                        </button>
-                        <select 
-                            value={targetLanguage} 
-                            onChange={(e) => setTargetLanguage(e.target.value)}
-                            className="p-2 border rounded mr-2"
-                        >
-                            <option value="">Select target language</option>
-                            {languages.map(lang => (
-                                <option key={lang.code} value={lang.name}>{lang.name}</option>
-                            ))}
-                        </select>
-                        <button 
-                            onClick={translateSRT}
-                            className="bg-purple-500 text-white px-4 py-2 rounded"
-                            disabled={!srtContent || !targetLanguage || isLoading}
-                        >
-                            {isLoading ? 'Translating...' : 'Translate'}
-                        </button>
+                        <textarea 
+                            value={customPrompt}
+                            onChange={(e) => setCustomPrompt(e.target.value)}
+                            className="w-full h-32 p-2 border rounded"
+                            placeholder="Enter custom translation instructions here (optional)"
+                        />
+                    </div>
+                    <div className="mb-4">
+                        {!isLoading ? (
+                            <button 
+                                onClick={translateSRT}
+                                className="bg-purple-500 text-white px-4 py-2 rounded"
+                                disabled={!srtContent || !targetLanguage || !selectedModel}
+                            >
+                                Translate
+                            </button>
+                        ) : (
+                            <button 
+                                onClick={stopTranslation}
+                                className="bg-red-500 text-white px-4 py-2 rounded"
+                            >
+                                Stop Translation
+                            </button>
+                        )}
                     </div>
                     {fileName && <p className="mb-2">Current file: {fileName}</p>}
+                    {isLoading && (
+                        <div className="mb-4">
+                            <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                                <div className="bg-blue-600 h-2.5 rounded-full" style={{width: `${progress}%`}}></div>
+                            </div>
+                            <p className="text-center mt-2">{progress}% Complete</p>
+                        </div>
+                    )}
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <h2 className="text-lg font-semibold mb-2">Original Content</h2>
