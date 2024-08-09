@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subtitle Translation Verifier</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .file-input {
+            margin-bottom: 20px;
+        }
+        .subtitle-container {
+            display: flex;
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+        .subtitle-column {
+            width: 50%;
+            padding: 10px;
+        }
+        .subtitle-pair {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .subtitle-content {
+            width: 100%;
+            white-space: pre-wrap;
+        }
+        .time-tag {
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .button-container {
+            text-align: center;
+            margin-top: 20px;
+        }
+        #saveButton {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #saveButton:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Subtitle Translation Verifier</h1>
+    <div class="file-input">
+        <input type="file" id="srtFile" accept=".srt">
+        <input type="file" id="vttFile" accept=".vtt">
+    </div>
+    <div class="subtitle-container">
+        <div id="srtContent" class="subtitle-column"></div>
+        <div id="vttContent" class="subtitle-column"></div>
+    </div>
+    <div class="button-container">
+        <button id="saveButton">Save VTT File</button>
+    </div>
+
+    <script>
+        const srtFileInput = document.getElementById('srtFile');
+        const vttFileInput = document.getElementById('vttFile');
+        const srtContent = document.getElementById('srtContent');
+        const vttContent = document.getElementById('vttContent');
+        const saveButton = document.getElementById('saveButton');
+
+        function parseSRT(content) {
+            const subtitles = [];
+            const blocks = content.split('\n\n');
+            
+            for (let block of blocks) {
+                const lines = block.split('\n');
+                if (lines.length < 3) continue;  // Skip invalid blocks
+                
+                const index = lines[0].trim();
+                const timeTag = lines[1].trim();
+                const text = lines.slice(2).join('\n').trim();
+                
+                if (timeTag.includes('-->')) {
+                    subtitles.push({ index, timeTag, text });
+                }
+            }
+            
+            return subtitles;
+        }
+
+        function parseVTT(content) {
+            const lines = content.split('\n');
+            const subtitles = [];
+            let currentSubtitle = {};
+
+            for (let line of lines) {
+                line = line.trim();
+                if (line === '' || line === 'WEBVTT') continue;
+                if (line.includes('-->')) {
+                    if (currentSubtitle.timeTag) {
+                        subtitles.push(currentSubtitle);
+                        currentSubtitle = {};
+                    }
+                    currentSubtitle.timeTag = line;
+                } else if (currentSubtitle.timeTag) {
+                    if (!currentSubtitle.text) currentSubtitle.text = line;
+                    else currentSubtitle.text += '\n' + line;
+                }
+            }
+            if (currentSubtitle.timeTag) {
+                subtitles.push(currentSubtitle);
+            }
+            return subtitles;
+        }
+
+        function displaySubtitles(subtitles, container, isEditable) {
+            container.innerHTML = '';
+            subtitles.forEach((subtitle, index) => {
+                const subtitleElement = document.createElement('div');
+                subtitleElement.className = 'subtitle-pair';
+                subtitleElement.innerHTML = `
+                    <div class="subtitle-content">
+                        <div class="time-tag">${subtitle.timeTag}</div>
+                        <div class="text" ${isEditable ? 'contenteditable="true"' : ''}>${subtitle.text}</div>
+                    </div>
+                `;
+                container.appendChild(subtitleElement);
+            });
+        }
+
+        srtFileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const subtitles = parseSRT(e.target.result);
+                displaySubtitles(subtitles, srtContent, false);
+            };
+            reader.readAsText(file);
+        });
+
+        vttFileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const subtitles = parseVTT(e.target.result);
+                displaySubtitles(subtitles, vttContent, true);
+            };
+            reader.readAsText(file);
+        });
+
+        saveButton.addEventListener('click', function() {
+            const vttSubtitles = Array.from(vttContent.querySelectorAll('.subtitle-pair')).map(pair => {
+                const timeTag = pair.querySelector('.time-tag').textContent;
+                const text = pair.querySelector('.text').textContent;
+                return `${timeTag}\n${text}\n`;
+            });
+
+            const content = 'WEBVTT\n\n' + vttSubtitles.join('\n');
+            const blob = new Blob([content], { type: 'text/vtt' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'verified_subtitle.vtt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>
