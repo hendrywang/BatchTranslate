@@ -3,27 +3,28 @@ import re
 import requests
 import json
 from tqdm import tqdm
-import time
 
-def translate_text_with_interpretation(text, prev_line, next_line, target_language="Vietnamese", retry_count=0):
+def translate_text_with_context(text_lines, prev_lines, next_lines, target_language="Vietnamese"):
     url = "http://localhost:11434/api/generate"
-    context = f"Previous line: {prev_line}\nCurrent line: {text}\nNext line: {next_line}"
-    prompt = f"""As an expert translator, your task is to translate the following Chinese movie subtitle to {target_language} (Vietnamese).
+    context = f"Previous lines: {' '.join(prev_lines)}\nCurrent lines: {' '.join(text_lines)}\nNext lines: {' '.join(next_lines)}"
+    prompt = f"""Translate the following Chinese movie subtitle to {target_language}.
+
+    Instructions:
+    1. Understand the natural meaning and nuance of the Chinese text in the context of the movie.
+    2. Express this meaning naturally in {target_language}, as if originally written in {target_language}.
+    3. Keep the original phrase.
+    4. Do not include any introductions, explanations, warning or comments.
+    5. Ensure the translation captures the meaning accurately, rather than translating word-for-word.
+    6. Directly translate the slurs or insults words. Use same pronunciation in Chinese of character name and noun..
+    7. Maintain the style appropriate for movie subtitles (concise yet clear).
 
     Context:
     {context}
-
-    Instructions:
-    1. Carefully interpret the Chinese text, considering context, cultural nuances, and idiomatic expressions.
-    2. Translate the interpreted meaning into {target_language} (Vietnamese), ensuring it sounds natural and appropriate for subtitles.
-    3. CRITICAL: Ensure ALL text is translated to {target_language} (Vietnamese). Do not leave any Chinese characters in your translation.
-    4. Maintain the tone and style appropriate for movie subtitles.
-
-    Provide ONLY the final {target_language} (Vietnamese) translation, without any explanations or original text. 
-    Your response must contain ONLY Vietnamese words and punctuation."""
-
+    
+    Translate only the current lines, preserving the line structure:"""
+    
     data = {
-        "model": "mistral-nemo:12b-instruct-2407-q8_0",  # or any other model you have in Ollama
+        "model": "gemma2:27b-instruct-q8_0",
         "prompt": prompt,
         "stream": False
     }
@@ -32,54 +33,18 @@ def translate_text_with_interpretation(text, prev_line, next_line, target_langua
     if response.status_code == 200:
         try:
             result = response.json()
-            translation = result.get('response', '').strip()
-            
-            # Check if the translation contains Chinese characters
-            if re.search(r'[\u4e00-\u9fff]', translation):
-                if retry_count < 3:
-                    print(f"Retry {retry_count + 1}: Translation contains Chinese characters, retrying...")
-                    time.sleep(1)  # Add a small delay before retrying
-                    return translate_text_with_interpretation(text, prev_line, next_line, target_language, retry_count + 1)
-                else:
-                    print(f"Warning: Translation still contains Chinese characters after retries: {translation}")
-                    return fallback_translation(text, target_language)
-            
-            if not translation:
-                print("Warning: Translation is empty, using fallback.")
-                return fallback_translation(text, target_language)
-            
-            return translation
+            translation = result.get('response', '')
+            translated_lines = translation.strip().split('\n')
+            # Ensure we have the same number of lines as the original
+            while len(translated_lines) < len(text_lines):
+                translated_lines.append('')
+            return translated_lines[:len(text_lines)]
         except json.JSONDecodeError:
             print(f"Error decoding JSON: {response.text}")
-            return fallback_translation(text, target_language)
+            return None
     else:
         print(f"Error: {response.status_code}")
-        return fallback_translation(text, target_language)
-
-def fallback_translation(text, target_language="Vietnamese"):
-    url = "http://localhost:11434/api/generate"
-    prompt = f"""Translate the following Chinese text to {target_language} (Vietnamese) literally, word by word if necessary:
-
-    {text}
-
-    Provide ONLY the {target_language} (Vietnamese) translation, no explanations."""
-
-    data = {
-        "model": "mistral-nemo:12b-instruct-2407-q8_0",
-        "prompt": prompt,
-        "stream": False
-    }
-    
-    response = requests.post(url, json=data)
-    if response.status_code == 200:
-        try:
-            result = response.json()
-            translation = result.get('response', '').strip()
-            return translation if translation else text  # Return original text if translation is empty
-        except json.JSONDecodeError:
-            return text
-    else:
-        return text
+        return None
 
 def srt_to_vtt(input_file, output_file):
     with open(input_file, 'r', encoding='utf-8') as infile:
@@ -87,66 +52,76 @@ def srt_to_vtt(input_file, output_file):
 
     total_lines = len(lines)
     translated_count = 0
-    fallback_count = 0
 
     with open(output_file, 'w', encoding='utf-8') as outfile:
         outfile.write("WEBVTT\n\n")
         
         pbar = tqdm(total=total_lines, desc="Translating", unit="line")
         
-        subtitle_text = []
-        for i, line in enumerate(lines):
-            pbar.update(1)
+        subtitle_blocks = []
+        current_block = []
+        for line in lines:
             line = line.strip()
-            
             if re.match(r'^\d+$', line):
-                if subtitle_text:
-                    prev_line = subtitle_text[-2] if len(subtitle_text) > 1 else ""
-                    next_line = lines[i+2].strip() if i+2 < total_lines else ""
-                    translated_line = translate_text_with_interpretation(subtitle_text[-1], prev_line, next_line)
-                    outfile.write(translated_line + '\n')
-                    translated_count += 1
-                    if translated_line == subtitle_text[-1]:
-                        fallback_count += 1
-                    subtitle_text = []
-                outfile.write(line + '\n')
-            elif '-->' in line:
-                outfile.write(line.replace(',', '.') + '\n')
-            elif line:
-                subtitle_text.append(line)
+                if current_block:
+                    subtitle_blocks.append(current_block)
+                    current_block = []
+            current_block.append(line)
+        if current_block:
+            subtitle_blocks.append(current_block)
+
+        for i, block in enumerate(subtitle_blocks):
+            pbar.update(len(block))
+            
+            outfile.write(f"{block[0]}\n")  # Subtitle number
+            outfile.write(f"{block[1].replace(',', '.')}\n")  # Timestamp
+            
+            text_lines = block[2:]
+            prev_lines = subtitle_blocks[i-1][2:] if i > 0 else []
+            next_lines = subtitle_blocks[i+1][2:] if i < len(subtitle_blocks) - 1 else []
+            
+            translated_lines = translate_text_with_context(text_lines, prev_lines, next_lines)
+            if translated_lines:
+                for line in translated_lines:
+                    outfile.write(f"{line}\n")
+                translated_count += len(text_lines)
             else:
-                outfile.write('\n')
-        
-        # Handle the last subtitle
-        if subtitle_text:
-            prev_line = subtitle_text[-2] if len(subtitle_text) > 1 else ""
-            translated_line = translate_text_with_interpretation(subtitle_text[-1], prev_line, "")
-            outfile.write(translated_line + '\n')
-            translated_count += 1
-            if translated_line == subtitle_text[-1]:
-                fallback_count += 1
+                for line in text_lines:
+                    outfile.write(f"{line}\n")
+                print(f"Warning: Could not translate lines: {' '.join(text_lines)}")
+            
+            outfile.write("\n")
         
         pbar.close()
     
     print(f"Translation complete. Translated {translated_count} lines.")
-    print(f"Fallback translation used for {fallback_count} lines.")
+
+def process_directory(input_dir):
+    srt_files = [f for f in os.listdir(input_dir) if f.endswith('.srt')]
+    srt_files.sort(key=lambda f: int(re.search(r'\d+', f).group()) if re.search(r'\d+', f) else float('inf'))
+    
+    total_files = len(srt_files)
+    
+    for i, srt_file in enumerate(srt_files, 1):
+        input_path = os.path.join(input_dir, srt_file)
+        name, _ = os.path.splitext(srt_file)
+        output_path = os.path.join(input_dir, f"{name}_vi.vtt")
+        
+        print(f"\nProcessing file {i}/{total_files}: {srt_file}")
+        print(f"Output will be saved to: {output_path}")
+        
+        srt_to_vtt(input_path, output_path)
 
 def main():
-    input_path = input("Enter the path of the original Chinese SRT file: ")
+    input_dir = input("Enter the path of the directory containing SRT files: ")
     
-    if not os.path.exists(input_path):
-        print("Error: File not found.")
+    if not os.path.isdir(input_dir):
+        print("Error: Directory not found.")
         return
     
-    directory, filename = os.path.split(input_path)
-    name, _ = os.path.splitext(filename)
-    output_path = os.path.join(directory, f"{name}_vi.vtt")
-    
-    print(f"Starting translation of {input_path}")
-    print(f"Output will be saved to {output_path}")
-    
-    srt_to_vtt(input_path, output_path)
-    print(f"Translation complete. Output file: {output_path}")
+    print(f"Starting translation of SRT files in: {input_dir}")
+    process_directory(input_dir)
+    print("\nAll translations complete.")
 
 if __name__ == "__main__":
     main()
