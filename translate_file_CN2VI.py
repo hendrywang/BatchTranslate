@@ -112,15 +112,20 @@ def process_directory(input_dir):
         
         srt_to_vtt(input_path, output_path)
 
+def process_folders(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        srt_files = [f for f in filenames if f.endswith('.srt')]
+        if srt_files:
+            print(f"\nProcessing folder: {dirpath}")
+            print(f"Found {len(srt_files)} SRT files")
+            process_directory(dirpath)
+
 def main():
-    input_dir = input("Enter the path of the directory containing SRT files: ")
+    current_dir = os.getcwd()
+    print(f"Starting translation process in: {current_dir}")
     
-    if not os.path.isdir(input_dir):
-        print("Error: Directory not found.")
-        return
+    process_folders(current_dir)
     
-    print(f"Starting translation of SRT files in: {input_dir}")
-    process_directory(input_dir)
     print("\nAll translations complete.")
 
 if __name__ == "__main__":
