@@ -3,6 +3,7 @@ import re
 import requests
 import json
 from tqdm import tqdm
+import concurrent.futures
 
 def translate_text_with_context(text_lines, prev_lines, next_lines, target_language="Vietnamese"):
     url = "http://localhost:11434/api/generate"
@@ -97,46 +98,49 @@ def srt_to_vtt(input_file, output_file):
     print(f"Translation complete. Translated {translated_count} lines.")
 
 def file_already_translated(input_file, output_file):
-    """
-    Check if the output file already exists and is newer than the input file.
-    """
     if not os.path.exists(output_file):
         return False
     return os.path.getmtime(output_file) > os.path.getmtime(input_file)
 
-def process_directory(input_dir):
+def process_file(file_info):
+    input_path, output_path = file_info
+    if file_already_translated(input_path, output_path):
+        return f"Skipped: {os.path.basename(input_path)} (already translated)"
+    
+    srt_to_vtt(input_path, output_path)
+    return f"Processed: {os.path.basename(input_path)}"
+
+def process_directory(input_dir, max_workers=5):
     srt_files = [f for f in os.listdir(input_dir) if f.endswith('.srt')]
     srt_files.sort(key=lambda f: int(re.search(r'\d+', f).group()) if re.search(r'\d+', f) else float('inf'))
     
-    total_files = len(srt_files)
-    
-    for i, srt_file in enumerate(srt_files, 1):
+    file_pairs = []
+    for srt_file in srt_files:
         input_path = os.path.join(input_dir, srt_file)
         name, _ = os.path.splitext(srt_file)
         output_path = os.path.join(input_dir, f"{name}_vi.vtt")
-        
-        if file_already_translated(input_path, output_path):
-            print(f"\nSkipping file {i}/{total_files}: {srt_file} (already translated)")
-            continue
-        
-        print(f"\nProcessing file {i}/{total_files}: {srt_file}")
-        print(f"Output will be saved to: {output_path}")
-        
-        srt_to_vtt(input_path, output_path)
+        file_pairs.append((input_path, output_path))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(tqdm(executor.map(process_file, file_pairs), total=len(file_pairs), desc="Processing files"))
+    
+    for result in results:
+        print(result)
 
-def process_folders(root_dir):
+def process_folders(root_dir, max_workers=5):
     for dirpath, dirnames, filenames in os.walk(root_dir):
         srt_files = [f for f in filenames if f.endswith('.srt')]
         if srt_files:
             print(f"\nProcessing folder: {dirpath}")
             print(f"Found {len(srt_files)} SRT files")
-            process_directory(dirpath)
+            process_directory(dirpath, max_workers)
 
 def main():
     current_dir = os.getcwd()
     print(f"Starting translation process in: {current_dir}")
     
-    process_folders(current_dir)
+    max_workers = 5  # You can adjust this number based on your system's capabilities
+    process_folders(current_dir, max_workers)
     
     print("\nAll translations complete.")
 

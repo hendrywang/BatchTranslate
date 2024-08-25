@@ -3,6 +3,7 @@ import re
 import requests
 import json
 from tqdm import tqdm
+import concurrent.futures
 
 def translate_text_with_context(text_lines, prev_lines, next_lines, target_language="Vietnamese"):
     url = "http://localhost:11434/api/generate"
@@ -56,8 +57,6 @@ def srt_to_vtt(input_file, output_file):
     with open(output_file, 'w', encoding='utf-8') as outfile:
         outfile.write("WEBVTT\n\n")
         
-        pbar = tqdm(total=total_lines, desc="Translating", unit="line")
-        
         subtitle_blocks = []
         current_block = []
         for line in lines:
@@ -71,12 +70,24 @@ def srt_to_vtt(input_file, output_file):
             subtitle_blocks.append(current_block)
 
         for i, block in enumerate(subtitle_blocks):
-            pbar.update(len(block))
-            
-            outfile.write(f"{block[0]}\n")  # Subtitle number
-            outfile.write(f"{block[1].replace(',', '.')}\n")  # Timestamp
-            
-            text_lines = block[2:]
+            if len(block) < 2:
+                print(f"Warning: Skipping malformed subtitle block: {block}")
+                continue
+
+            # Write subtitle number (if available)
+            if re.match(r'^\d+$', block[0]):
+                outfile.write(f"{block[0]}\n")
+
+            # Write timestamp
+            timestamp = next((line for line in block if '-->' in line), None)
+            if timestamp:
+                outfile.write(f"{timestamp.replace(',', '.')}\n")
+            else:
+                print(f"Warning: No timestamp found in block: {block}")
+                continue
+
+            # Extract and translate text lines
+            text_lines = [line for line in block if line and not re.match(r'^\d+$', line) and '-->' not in line]
             prev_lines = subtitle_blocks[i-1][2:] if i > 0 else []
             next_lines = subtitle_blocks[i+1][2:] if i < len(subtitle_blocks) - 1 else []
             
@@ -91,52 +102,53 @@ def srt_to_vtt(input_file, output_file):
                 print(f"Warning: Could not translate lines: {' '.join(text_lines)}")
             
             outfile.write("\n")
-        
-        pbar.close()
     
     print(f"Translation complete. Translated {translated_count} lines.")
 
 def file_already_translated(input_file, output_file):
-    """
-    Check if the output file already exists and is newer than the input file.
-    """
     if not os.path.exists(output_file):
         return False
     return os.path.getmtime(output_file) > os.path.getmtime(input_file)
 
-def process_directory(input_dir):
+def process_file(file_info):
+    input_path, output_path = file_info
+    if file_already_translated(input_path, output_path):
+        return f"Skipped: {os.path.basename(input_path)} (already translated)"
+    
+    srt_to_vtt(input_path, output_path)
+    return f"Processed: {os.path.basename(input_path)}"
+
+def process_directory(input_dir, max_workers=5):
     srt_files = [f for f in os.listdir(input_dir) if f.endswith('.srt')]
     srt_files.sort(key=lambda f: int(re.search(r'\d+', f).group()) if re.search(r'\d+', f) else float('inf'))
     
-    total_files = len(srt_files)
-    
-    for i, srt_file in enumerate(srt_files, 1):
+    file_pairs = []
+    for srt_file in srt_files:
         input_path = os.path.join(input_dir, srt_file)
         name, _ = os.path.splitext(srt_file)
         output_path = os.path.join(input_dir, f"{name}_vi.vtt")
-        
-        if file_already_translated(input_path, output_path):
-            print(f"\nSkipping file {i}/{total_files}: {srt_file} (already translated)")
-            continue
-        
-        print(f"\nProcessing file {i}/{total_files}: {srt_file}")
-        print(f"Output will be saved to: {output_path}")
-        
-        srt_to_vtt(input_path, output_path)
+        file_pairs.append((input_path, output_path))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(tqdm(executor.map(process_file, file_pairs), total=len(file_pairs), desc="Processing files"))
+    
+    for result in results:
+        print(result)
 
-def process_folders(root_dir):
+def process_folders(root_dir, max_workers=5):
     for dirpath, dirnames, filenames in os.walk(root_dir):
         srt_files = [f for f in filenames if f.endswith('.srt')]
         if srt_files:
             print(f"\nProcessing folder: {dirpath}")
             print(f"Found {len(srt_files)} SRT files")
-            process_directory(dirpath)
+            process_directory(dirpath, max_workers)
 
 def main():
     current_dir = os.getcwd()
     print(f"Starting translation process in: {current_dir}")
     
-    process_folders(current_dir)
+    max_workers = 5  # You can adjust this number based on your system's capabilities
+    process_folders(current_dir, max_workers)
     
     print("\nAll translations complete.")
 
